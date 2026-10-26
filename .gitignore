@@ -28,6 +28,14 @@ go.work.sum
 # env file
 .env
 
+# Certificate files
+key.pem
+cert.pem
+entra-bundle.pem
+
+# Lambda artifacts
+dist/
+
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
