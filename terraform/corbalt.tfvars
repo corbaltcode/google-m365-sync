@@ -7,4 +7,4 @@ exclude_upns = []
 # Flip to false after reviewing a dry-run log.
 dry_run = false
 
-# alarm_sns_topic_arn = "arn:aws:sns:us-west-2:123456789012:ops-alerts"
+alarm_sns_topic_arn = "arn:aws:sns:us-west-2:795973919855:google-m365-sync-issues"
