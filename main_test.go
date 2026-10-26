@@ -21,6 +21,13 @@ func TestEffectiveDryRun(t *testing.T) {
 		{"misspelled field", false, `{"dry_run": true}`, true, true},
 		{"not JSON", false, `dryRun`, true, true},
 		{"trailing data", false, `{} {"dryRun": false}`, true, true},
+		{"stray closing bracket", false, `{}]`, true, true},
+		{"duplicate key", false, `{"dryRun": true, "dryRun": false}`, true, true},
+		{"case-variant key", false, `{"dryRun": true, "DRYRUN": false}`, true, true},
+		{"case-variant key alone", false, `{"DryRun": true}`, true, true},
+		{"array", false, `[]`, true, true},
+		{"null value", false, `{"dryRun": null}`, true, true},
+		{"truncated", false, `{"dryRun": true`, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := effectiveDryRun(tc.configured, []byte(tc.payload))

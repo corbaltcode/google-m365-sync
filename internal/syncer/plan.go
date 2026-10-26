@@ -77,32 +77,68 @@ func BuildPlan(cfg Config, gUsers []gws.User, eUsers []graph.User) (Plan, error)
 	plan.EntraUsers = len(candidates)
 	plan.Warnings = append(plan.Warnings, idx.duplicateWarnings()...)
 
-	matched := map[*graph.User]bool{}
+	// Pass 1: every Entra user each Google email could refer to, and how many
+	// Google emails claim each Entra user. Only a one-to-one match is ever
+	// written; anything else is reported and left alone.
+	type googleEntry struct {
+		g     gws.User
+		email string
+		cands []*graph.User
+	}
+	var entries []googleEntry
+	claimedBy := map[*graph.User][]string{}
 	for _, g := range gUsers {
 		email := strings.ToLower(strings.TrimSpace(g.PrimaryEmail))
 		if !inDomain(email, cfg.Domain) {
 			continue
 		}
 		plan.GoogleUsers++
-		e, conflict := idx.lookup(email)
-		if len(conflict) > 0 {
-			// Ambiguous: touch none of them, but don't disable them either.
+		cands := idx.candidatesFor(email)
+		for _, c := range cands {
+			claimedBy[c] = append(claimedBy[c], email)
+		}
+		entries = append(entries, googleEntry{g, email, cands})
+	}
+	var conflicts []string
+	for e, emails := range claimedBy {
+		if len(emails) > 1 {
+			sort.Strings(emails)
+			conflicts = append(conflicts, fmt.Sprintf(
+				"Entra user %s is matched by more than one Google user (%s) by UPN or immutable ID; not modifying it",
+				e.UserPrincipalName, strings.Join(emails, ", ")))
+		}
+	}
+	sort.Strings(conflicts)
+	plan.Warnings = append(plan.Warnings, conflicts...)
+
+	// Pass 2: plan changes for unambiguous matches. Every Entra user that any
+	// Google email refers to counts as matched, so it is never disabled as
+	// missing from Google.
+	matched := map[*graph.User]bool{}
+	for _, entry := range entries {
+		g, email := entry.g, entry.email
+		for _, c := range entry.cands {
+			matched[c] = true
+		}
+		if len(entry.cands) > 1 {
 			var upns []string
-			for _, c := range conflict {
-				matched[c] = true
+			for _, c := range entry.cands {
 				upns = append(upns, c.UserPrincipalName)
 			}
-			sort.Strings(upns)
 			plan.Warnings = append(plan.Warnings, fmt.Sprintf(
 				"%s matches more than one Entra user (%s) by UPN or immutable ID; not modifying any of them",
 				email, strings.Join(upns, ", ")))
 			continue
 		}
 		if cfg.Exclude[email] {
-			if e != nil {
-				matched[e] = true
-			}
 			continue
+		}
+		var e *graph.User
+		if len(entry.cands) == 1 {
+			e = entry.cands[0]
+			if len(claimedBy[e]) > 1 {
+				continue // reported above
+			}
 		}
 		if e == nil {
 			if g.Suspended || g.Archived {
@@ -117,7 +153,6 @@ func BuildPlan(cfg Config, gUsers []gws.User, eUsers []graph.User) (Plan, error)
 			})
 			continue
 		}
-		matched[e] = true
 		if cfg.Exclude[strings.ToLower(e.UserPrincipalName)] {
 			continue
 		}
@@ -178,9 +213,9 @@ func BuildPlan(cfg Config, gUsers []gws.User, eUsers []graph.User) (Plan, error)
 	return plan, nil
 }
 
-// entraIndex finds the Entra user for a Google email. Immutable IDs and UPNs
-// are kept in separate maps so the result doesn't depend on the order Graph
-// returns users.
+// entraIndex finds the Entra users a Google email could refer to. Immutable
+// IDs and UPNs are kept in separate maps so the result doesn't depend on the
+// order Graph returns users.
 type entraIndex struct {
 	candidates  []*graph.User
 	byUPN       map[string]*graph.User
@@ -222,23 +257,26 @@ func (idx entraIndex) duplicateWarnings() []string {
 	return out
 }
 
-// lookup prefers the immutable ID, the value federated sign-in matches on,
-// and falls back to the UPN. If the email identifies more than one Entra user
-// (a shared immutable ID, or an immutable ID on one user and the UPN of
-// another), it returns them all as conflict and no single match.
-func (idx entraIndex) lookup(email string) (match *graph.User, conflict []*graph.User) {
-	byID := idx.byImmutable[email]
-	if len(byID) > 1 {
-		return nil, byID
-	}
-	byUPN := idx.byUPN[email]
-	if len(byID) == 1 {
-		if byUPN != nil && byUPN != byID[0] {
-			return nil, []*graph.User{byID[0], byUPN}
+// candidatesFor returns every Entra user the email could refer to: those
+// whose immutable ID is the email, plus the one whose UPN is the email,
+// deduplicated and sorted by UPN. More than one means the email is ambiguous.
+func (idx entraIndex) candidatesFor(email string) []*graph.User {
+	var out []*graph.User
+	seen := map[*graph.User]bool{}
+	add := func(u *graph.User) {
+		if u != nil && !seen[u] {
+			seen[u] = true
+			out = append(out, u)
 		}
-		return byID[0], nil
 	}
-	return byUPN, nil
+	for _, u := range idx.byImmutable[email] {
+		add(u)
+	}
+	add(idx.byUPN[email])
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i].UserPrincipalName) < strings.ToLower(out[j].UserPrincipalName)
+	})
+	return out
 }
 
 // createBody omits passwordProfile; Apply adds it just before sending so the

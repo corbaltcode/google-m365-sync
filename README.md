@@ -57,8 +57,10 @@ Safety rails:
   dry run, but an event can't turn writes on. Any other payload (a misspelled
   field, `"true"` as a string, bad JSON) is rejected and the run fails without
   touching Entra.
-- If an email matches more than one Entra user (by UPN or immutable ID), none
-  of them is modified or disabled, and a warning names them.
+- Only one-to-one matches are written. If a Google email matches more than one
+  Entra user, or an Entra user is matched by more than one Google email (by
+  UPN or immutable ID), none of those users is modified or disabled, and a
+  warning names them.
 - If Google returns zero users, the run aborts.
 - If more than `MAX_DISABLES` (default 3) users would be disabled for being
   missing from Google, *no* missing-user disables are applied and the run

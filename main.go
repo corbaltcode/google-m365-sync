@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strconv"
@@ -153,29 +154,61 @@ func (src paramSource) load(ctx context.Context, clients awsClientsFunc) (string
 	return *out.Parameter.Value, nil
 }
 
-// event lets a manual invocation override dry-run: {"dryRun": true}.
-type event struct {
-	DryRun *bool `json:"dryRun"`
-}
-
 // effectiveDryRun applies an invocation payload to the configured dry-run
-// setting. An event may force a dry run but cannot turn one off. A payload
-// that doesn't parse, or has unknown fields (e.g. "dry_run"), is rejected so
-// a mistyped dry-run request never runs live.
+// setting. An event may force a dry run but cannot turn one off.
+//
+// The only accepted payloads are empty, null, {}, and {"dryRun": <bool>}.
+// Anything else is rejected so a mistyped dry-run request never runs live.
+// The payload is checked token by token because encoding/json would accept
+// a repeated or case-variant key (last one wins) and trailing junk.
 func effectiveDryRun(configured bool, payload []byte) (bool, error) {
 	if len(bytes.TrimSpace(payload)) == 0 {
 		return configured, nil
 	}
+	invalid := func(why string) (bool, error) {
+		return true, fmt.Errorf(`invalid event %s: %s (expected {} or {"dryRun": true})`, payload, why)
+	}
 	dec := json.NewDecoder(bytes.NewReader(payload))
-	dec.DisallowUnknownFields()
-	var ev event
-	if err := dec.Decode(&ev); err != nil {
-		return true, fmt.Errorf("invalid event %s: %w (expected {} or {\"dryRun\": true})", payload, err)
+	tok, err := dec.Token()
+	if err != nil {
+		return invalid(err.Error())
 	}
-	if dec.More() {
-		return true, fmt.Errorf("invalid event %s: trailing data", payload)
+	requested := false
+	if tok != nil { // null is accepted as "no override"
+		if d, ok := tok.(json.Delim); !ok || d != '{' {
+			return invalid("not a JSON object")
+		}
+		seen := false
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return invalid(err.Error())
+			}
+			if key != "dryRun" {
+				return invalid(fmt.Sprintf("unknown field %q", key))
+			}
+			if seen {
+				return invalid("dryRun given more than once")
+			}
+			seen = true
+			v, err := dec.Token()
+			if err != nil {
+				return invalid(err.Error())
+			}
+			b, ok := v.(bool)
+			if !ok {
+				return invalid("dryRun must be true or false")
+			}
+			requested = b
+		}
+		if _, err := dec.Token(); err != nil { // closing }
+			return invalid(err.Error())
+		}
 	}
-	return configured || (ev.DryRun != nil && *ev.DryRun), nil
+	if _, err := dec.Token(); err != io.EOF {
+		return invalid("trailing data after the JSON object")
+	}
+	return configured || requested, nil
 }
 
 func run(ctx context.Context, log *slog.Logger, s settings, payload []byte) (syncer.Result, error) {

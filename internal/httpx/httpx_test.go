@@ -138,3 +138,57 @@ func TestWaitCtxCancelled(t *testing.T) {
 		t.Fatal("waitCtx ignored a cancelled context")
 	}
 }
+
+// truncatingServer promises a 100-byte 200 response, sends one byte, and
+// drops the connection, so reading the body fails.
+func truncatingServer(t *testing.T) (*httptest.Server, *int) {
+	t.Helper()
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		conn, buf, _ := w.(http.Hijacker).Hijack()
+		buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{")
+		buf.Flush()
+		conn.Close()
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+func TestBodyReadErrorIsNotSuccess(t *testing.T) {
+	srv, calls := truncatingServer(t)
+	var out struct{ Users []string }
+	c := &Client{wait: noWait}
+
+	if err := c.DoJSON(context.Background(), http.MethodGet, srv.URL, nil, &out); err == nil {
+		t.Fatal("GET with a cut-off body succeeded")
+	}
+	if *calls != 6 {
+		t.Errorf("GET sent %d times, want 6 (retried)", *calls)
+	}
+
+	*calls = 0
+	if err := c.DoJSON(context.Background(), http.MethodPost, srv.URL, map[string]string{"a": "b"}, &out); err == nil {
+		t.Fatal("POST with a cut-off body succeeded")
+	}
+	if *calls != 1 {
+		t.Errorf("POST sent %d times, want 1", *calls)
+	}
+}
+
+func TestEmptyBodyWhenJSONExpected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // no body
+	}))
+	defer srv.Close()
+	c := &Client{wait: noWait}
+
+	var out struct{ NextPageToken string }
+	if err := c.DoJSON(context.Background(), http.MethodGet, srv.URL, nil, &out); err == nil {
+		t.Fatal("empty 200 accepted as an empty page")
+	}
+	// A PATCH that expects no body (204-style) is still fine.
+	if err := c.DoJSON(context.Background(), http.MethodPatch, srv.URL, map[string]string{"a": "b"}, nil); err != nil {
+		t.Fatalf("empty reply to PATCH rejected: %v", err)
+	}
+}

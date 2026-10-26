@@ -50,7 +50,8 @@ type Client struct {
 const maxRetryAfter = 60 * time.Second
 
 // DoJSON sends in (if non-nil) as JSON and decodes a JSON response into out
-// (if non-nil). A 204 or empty body is fine when out is nil.
+// (if non-nil). An empty body is an error when out is non-nil, and fine
+// (e.g. 204 to a PATCH) when out is nil.
 func (c *Client) DoJSON(ctx context.Context, method, url string, in, out any) error {
 	var body []byte
 	if in != nil {
@@ -101,8 +102,17 @@ func (c *Client) DoJSON(ctx context.Context, method, url string, in, out any) er
 			}
 			return fmt.Errorf("%s %s: %w", method, url, err)
 		}
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 		resp.Body.Close()
+		if err != nil {
+			// A cut-off body must never pass as a short or empty page: a
+			// partial Google listing would look like deleted users. Retry
+			// like a network error (the request may already have run).
+			if idempotent && attempt < retries && wait(ctx, backoff(attempt, "", time.Now())) == nil {
+				continue
+			}
+			return fmt.Errorf("%s %s: HTTP %d: read response: %w", method, url, resp.StatusCode, err)
+		}
 
 		if resp.StatusCode == http.StatusTooManyRequests || (idempotent && resp.StatusCode >= 500) {
 			// If the wait can't happen (deadline), fall through and return
@@ -114,7 +124,10 @@ func (c *Client) DoJSON(ctx context.Context, method, url string, in, out any) er
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
 			return &StatusError{Method: method, URL: url, Status: resp.StatusCode, Body: string(data)}
 		}
-		if out != nil && len(data) > 0 {
+		if out != nil {
+			if len(data) == 0 {
+				return fmt.Errorf("%s %s: HTTP %d: empty response body, expected JSON", method, url, resp.StatusCode)
+			}
 			if err := json.Unmarshal(data, out); err != nil {
 				return fmt.Errorf("%s %s: decode: %w", method, url, err)
 			}
