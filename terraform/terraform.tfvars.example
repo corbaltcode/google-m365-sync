@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars (which is gitignored) and adjust.
+
+# The Entra tenant and client IDs are read from SSM Parameter Store at
+# /<name>/entra-tenant-id and /<name>/entra-client-id.
+
+# Leave google_admin_subject unset: the service account holds the Directory
+# Users Read-Only (API) role itself, so no user is impersonated.
+
+# Accounts the sync must never touch: Global Admins, break-glass accounts, and
+# anything else managed by hand in Entra.
+exclude_upns = []
+
+# Flip to false only after reviewing a dry-run log.
+dry_run = true
+
+# alarm_sns_topic_arn = "arn:aws:sns:us-west-2:123456789012:ops-alerts"

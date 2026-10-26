@@ -1,0 +1,29 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Run Go tests
+        run: make test
+      - name: Build Lambda zip
+        run: make zip
+      # The deployable artifact: download it into dist/ before terraform apply.
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: google-m365-sync-${{ github.sha }}
+          path: dist/google-m365-sync.zip
+          if-no-files-found: error
